@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "awmine"
+version = "0.2.0"
+description = "Mine your own agent transcripts for tool outcomes, lessons, procedures and cost -- redacted before anything lands"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "AitherOS Contributors", email = "dp27148@gmail.com"}
+]
+# No required dependencies, on purpose: a miner that reads JSONL off disk with
+# the stdlib. `awtoll` is reused when importable and copied when not.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+awmine = "awmine.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Aitherium/awmine"
+Repository = "https://github.com/Aitherium/awmine.git"
+
+[tool.hatch.build.targets.wheel]
+packages = ["awmine"]
+
+[tool.hatch.build.targets.sdist]
+include = ["awmine/**", "scripts/**", "tests/**", "README.md", "LICENSE", "aither-manifest.json"]
+
+# Self-contained on purpose (see awrise): the package is standalone by contract and
+# `extend = "../../pyproject.toml"` breaks `ruff check` for anyone holding the sdist.
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = []
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E402", "E701", "E721", "N802", "N999"]
+
+[tool.ruff.lint.isort]
+known-third-party = ["awmine", "awtoll"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

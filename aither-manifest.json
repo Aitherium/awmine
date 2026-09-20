@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "1",
+  "name": "awmine",
+  "description": "Mine your own agent transcripts for tool outcomes, lessons, procedures and cost, redacted before anything lands.",
+  "url": "https://aitherium.github.io/awmine/",
+  "repository": "https://github.com/Aitherium/awmine",
+  "kind": "tool",
+  "status": "unpublished",
+  "adopt": "Turn the agent transcripts already on your disk into redacted rows of what failed, what you corrected, what you repeat, and what it cost.",
+  "pairs_with": [
+    "awtoll",
+    "awrise",
+    "awdk",
+    "awskills"
+  ],
+  "includes": []
+}
