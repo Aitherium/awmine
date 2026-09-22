@@ -1,17 +1,29 @@
 {
   "schemaVersion": "1",
   "name": "awmine",
-  "description": "Mine your own agent transcripts for tool outcomes, lessons, procedures and cost, redacted before anything lands.",
+  "description": "Mine what your agents did -- outcomes, lessons and procedures out of the transcripts they left behind.",
   "url": "https://aitherium.github.io/awmine/",
   "repository": "https://github.com/Aitherium/awmine",
   "kind": "tool",
-  "status": "unpublished",
-  "adopt": "Turn the agent transcripts already on your disk into redacted rows of what failed, what you corrected, what you repeat, and what it cost.",
+  "status": "no-pages",
+  "adopt": "Point it at one transcript directory and read back what those sessions learned, with the line each lesson came from.",
   "pairs_with": [
     "awtoll",
-    "awrise",
-    "awdk",
-    "awskills"
+    "awm",
+    "awdata",
+    "awdecide",
+    "awskills",
+    "awrise"
   ],
-  "includes": []
+  "includes": [],
+  "metrics": {
+    "files": {
+      "value": 32,
+      "as_of": "2026-09-21T12:58:05-07:00"
+    },
+    "tests": {
+      "value": 11,
+      "as_of": "2026-09-21T12:58:05-07:00"
+    }
+  }
 }
