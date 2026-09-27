@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from awmine import reader as rdr
@@ -149,9 +150,13 @@ def test_resume_state_round_trips_and_caps_open_errors() -> None:
 
 
 def test_resolve_roots_prefers_explicit_then_env(monkeypatch) -> None:
-    monkeypatch.setenv("AWMINE_ROOTS", "C:/a;C:/b")
-    assert [p.as_posix() for p in rdr.resolve_roots(None)] == ["C:/a", "C:/b"]
-    assert [p.as_posix() for p in rdr.resolve_roots("D:/x")] == ["D:/x"]
+    # A drive-letter path only means something on Windows; on POSIX the list
+    # separator is ":" and "C:/a" is not one root. Use this host's own shape.
+    a, b = ("C:/a", "C:/b") if os.name == "nt" else ("/a", "/b")
+    monkeypatch.setenv("AWMINE_ROOTS", f"{a};{b}")
+    assert [p.as_posix() for p in rdr.resolve_roots(None)] == [a, b]
+    x = "D:/x" if os.name == "nt" else "/x"
+    assert [p.as_posix() for p in rdr.resolve_roots(x)] == [x]
     monkeypatch.delenv("AWMINE_ROOTS")
     monkeypatch.delenv("AWTOLL_TRANSCRIPTS", raising=False)
     assert rdr.resolve_roots(None) == [rdr.DEFAULT_ROOT]

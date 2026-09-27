@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from awmine.extractors import aggregate_procedures, correction_score, skill_slug
@@ -198,7 +199,7 @@ def test_every_row_carries_ts_and_source(mined) -> None:
             assert "ts" in r, name
             for k in ("root", "path", "line", "session_id", "top_session_id"):
                 assert k in r["source"], (name, k)
-            assert r["source"]["root"].startswith("<HOME>") or ":" in r["source"]["root"]
+            assert r["source"]["root"].startswith("<HOME>") or os.path.isabs(r["source"]["root"])
             assert Path(r["source"]["path"]).suffix == ".jsonl"
 
 

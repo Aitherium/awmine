@@ -1,0 +1,2 @@
+{"type": "started", "key": "v2:abc", "agentId": "a0000000000000001"}
+{"type": "result", "key": "v2:abc", "ok": true}
