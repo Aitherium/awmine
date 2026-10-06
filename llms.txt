@@ -1,0 +1,36 @@
+# awmine
+
+> Mine what your agents did -- outcomes, lessons and procedures out of the transcripts they left behind.
+
+Every agent session leaves a transcript, and almost every transcript is thrown away. The correction a human made at turn 40, the retry that finally worked, the six-command sequence three sessions each re-derived -- all of it sits in JSONL nobody reads, while the next session starts from zero.
+
+## Install
+
+```
+pip install git+https://github.com/Aitherium/awmine.git
+```
+
+## In Claude Code
+
+- skill: `/awmine`
+
+## Use it in 30 seconds
+
+Point it at one transcript directory and read back what those sessions learned, with the line each lesson came from.
+
+## Composes with
+
+- [awtoll](https://aitherium.github.io/awtoll/) — What every tool call costs you in context, measured from your own transcripts.
+- [awm](https://aitherium.github.io/awm/) — A portable, scoped agent memory.
+- [awdata](https://aitherium.github.io/awdata/) — Open labelled corpora you can train and measure against, with the code that built them.
+- [awdecide](https://aitherium.github.io/awdecide/) — One typed-decision contract -- choice / score / bool with a probability -- over a ladder of backends you already run (rules, tiny local models, an LLM's logprobs), fail-closed, with a Brier ledger that resolves every decision against its outcome.
+- [awskills](https://aitherium.github.io/awskills/) — Portable agent skills — self-contained procedures an agent loads on demand.
+- [awrise](https://aitherium.github.io/awrise/) — Wake an agent on a schedule, let it do one thing, and put it back to sleep.
+
+## Where it lives
+
+- Repo: https://github.com/Aitherium/awmine
+
+This repository is mirrored from the AitherOS monorepo by `.github/workflows/sync-awmine.yml`; hand edits made here are overwritten on the next sync — change the source instead.
+
+Everything Aitherium, in one file for agents: https://aitherium.com/llms.txt
