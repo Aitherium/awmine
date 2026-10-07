@@ -22,6 +22,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import reader as rdr
+from .adapters import USAGE_TYPE
 from .redact import Denylist, redact_text
 
 QUOTE_CAP = 320
@@ -254,6 +255,13 @@ class Miner:
             c["last_ts"] = ts
         if cls == "sidecar":
             self.sidecars[str(rec.get("type"))] = (line, rec)  # last occurrence wins
+            if rec.get("type") == USAGE_TYPE and isinstance(rec.get("usage"), dict):
+                u = rec["usage"]  # another harness's per-request tokens (adapters.py)
+                c["input_tokens"] += _int(u.get("input_tokens"))
+                c["cache_creation_tokens"] += _int(u.get("cache_creation_input_tokens"))
+                c["cache_read_tokens"] += _int(u.get("cache_read_input_tokens"))
+                c["output_tokens"] += _int(u.get("output_tokens"))
+                return
             if rec.get("type") == "cost-state":
                 c["cost_state"] = {
                     "totalCostUSD": rec.get("totalCostUSD"),

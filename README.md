@@ -47,6 +47,12 @@ awmine share --share               # render qualifying procedures as awskills/ca
 awmine --self-test                 # proves every extractor finds its planted case and that redaction can FAIL
 ```
 
+**Harnesses.** Claude Code, Codex (`~/.codex/sessions`) and Pi (`~/.pi/agent/sessions`)
+transcripts are all mined. Each Codex or Pi line is rewritten into the same record shape
+before the extractors see it, so a failed `pytest` is the same `$ pytest` step whichever
+harness ran it; `cost.jsonl` names the harness in `entrypoints`. The default roots include
+each harness store that exists on the box.
+
 Output root is `$AWMINE_OUT`, default `~/.aither/awmine/` (created `0700`). Roots come from
 `--roots`, `$AWMINE_ROOTS`, `$AWTOLL_TRANSCRIPTS` or the default, in that order.
 

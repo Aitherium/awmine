@@ -26,9 +26,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
+from .adapters import normalize
 from .redact import HOME_TOKEN
 
 DEFAULT_ROOT = Path.home() / ".claude" / "projects"
+#: Other harnesses' session stores, mined too when they exist (see adapters.py).
+HARNESS_ROOTS = (
+    Path.home() / ".codex" / "sessions",
+    Path.home() / ".pi" / "agent" / "sessions",
+)
 
 try:  # the import ladder: awtoll first, a copy of the same idiom otherwise
     from awtoll.shapes import shape_of_bash  # type: ignore
@@ -282,11 +288,15 @@ def home_sub_path(p: Path) -> str:
 
 
 def resolve_roots(explicit: Optional[str] = None) -> List[Path]:
-    """``--roots`` > ``$AWMINE_ROOTS`` > ``$AWTOLL_TRANSCRIPTS`` > ``~/.claude/projects``."""
+    """``--roots`` > ``$AWMINE_ROOTS`` > ``$AWTOLL_TRANSCRIPTS`` > the default.
+
+    The default is ``~/.claude/projects`` plus each of :data:`HARNESS_ROOTS`
+    that exists, so Codex and Pi sessions on the same box are mined too.
+    """
     raw = explicit or os.environ.get("AWMINE_ROOTS") or os.environ.get("AWTOLL_TRANSCRIPTS") or ""
     parts = [x for x in re.split(r"[;%s]" % re.escape(os.pathsep), raw) if x.strip()] if raw else []
     if not parts:
-        return [DEFAULT_ROOT]
+        return [DEFAULT_ROOT] + [r for r in HARNESS_ROOTS if r.is_dir()]
     return [Path(x.strip()) for x in parts]
 
 
@@ -394,7 +404,7 @@ def iter_records(path: Path, offset: int = 0, start_line: int = 0) -> Iterator[L
                 except ValueError:
                     return
                 n += 1
-                yield Line(n, fh.tell(), rec if isinstance(rec, dict) else None)
+                yield Line(n, fh.tell(), normalize(rec) if isinstance(rec, dict) else None)
                 return
             n += 1
             text = raw.decode("utf-8", "replace").strip()
@@ -406,7 +416,7 @@ def iter_records(path: Path, offset: int = 0, start_line: int = 0) -> Iterator[L
             except ValueError:
                 yield Line(n, fh.tell(), None)
                 continue
-            yield Line(n, fh.tell(), rec if isinstance(rec, dict) else None)
+            yield Line(n, fh.tell(), normalize(rec) if isinstance(rec, dict) else None)
 
 
 # ---------------------------------------------------------------------------

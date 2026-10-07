@@ -159,4 +159,14 @@ def test_resolve_roots_prefers_explicit_then_env(monkeypatch) -> None:
     assert [p.as_posix() for p in rdr.resolve_roots(x)] == [x]
     monkeypatch.delenv("AWMINE_ROOTS")
     monkeypatch.delenv("AWTOLL_TRANSCRIPTS", raising=False)
+    monkeypatch.setattr(rdr, "HARNESS_ROOTS", ())
     assert rdr.resolve_roots(None) == [rdr.DEFAULT_ROOT]
+
+
+def test_default_roots_add_only_existing_harness_stores(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("AWMINE_ROOTS", raising=False)
+    monkeypatch.delenv("AWTOLL_TRANSCRIPTS", raising=False)
+    codex, pi = tmp_path / "codex", tmp_path / "pi"
+    codex.mkdir()
+    monkeypatch.setattr(rdr, "HARNESS_ROOTS", (codex, pi))
+    assert rdr.resolve_roots(None) == [rdr.DEFAULT_ROOT, codex]
