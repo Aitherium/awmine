@@ -1,0 +1,6 @@
+# LF everywhere, for every checkout of this package -- including the PUBLIC
+# mirror, which carries no root .gitattributes of its own. The transcript
+# fixtures are compared byte for byte; a Windows checkout with autocrlf turned
+# them CRLF and the comparison failed on the hosted windows runner while
+# ubuntu stayed green (2026-10-07).
+* text=auto eol=lf
