@@ -42,6 +42,7 @@ awmine export --harvest            # exports/harvest.jsonl -- training-example r
 awmine export --codex --top 10     # exports/codex_candidates.yaml -- lesson candidates (reads a backlog, never writes it)
 awmine export --teach              # exports/teach.jsonl -- {fork,state,answer,reward} rows
 awmine export --skills             # exports/skills/<name>/SKILL.md drafts + toolpack_candidates.json
+awmine merge --out team/ a=DIR b=DIR  # pool several people's output into one team view
 awmine share                       # OPT-IN: nothing leaves the box without --share or AWMINE_SHARE=1
 awmine share --share               # render qualifying procedures as awskills/candidates/<slug>/SKILL.md
 awmine --self-test                 # proves every extractor finds its planted case and that redaction can FAIL
@@ -52,6 +53,13 @@ transcripts are all mined. Each Codex or Pi line is rewritten into the same reco
 before the extractors see it, so a failed `pytest` is the same `$ pytest` step whichever
 harness ran it; `cost.jsonl` names the harness in `entrypoints`. The default roots include
 each harness store that exists on the box.
+
+**Team view.** Each person runs `awmine run` on their own machine and hands over the output
+directory. `awmine merge --out team/ alice=/share/alice bob=/share/bob` rebuilds one team
+directory from them: every row is tagged `contributor`, re-redacted with the team's
+denylist, and procedures are recomputed across everyone, so `awmine report --out team/`
+shows what the whole team repeats, plus tokens and tool calls per harness and per person.
+Only redacted rows travel; raw transcripts never leave the machine that wrote them.
 
 Output root is `$AWMINE_OUT`, default `~/.aither/awmine/` (created `0700`). Roots come from
 `--roots`, `$AWMINE_ROOTS`, `$AWTOLL_TRANSCRIPTS` or the default, in that order.

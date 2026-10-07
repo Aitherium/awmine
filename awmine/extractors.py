@@ -22,7 +22,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import reader as rdr
-from .adapters import USAGE_TYPE
+from .adapters import META_TYPE, MODEL_TYPE, USAGE_TYPE
 from .redact import Denylist, redact_text
 
 QUOTE_CAP = 320
@@ -178,6 +178,9 @@ class Miner:
         c.setdefault("last_message_id", None)
         c.setdefault("parent_session_id", None)
         c.setdefault("agent_id", None)
+        c.setdefault("harness", None)
+        c.setdefault("harness_model", None)
+        c.setdefault("usage_totals", {})
 
     # -- helpers -----------------------------------------------------------
     def _q(self, text: str, cap: int = QUOTE_CAP) -> str:
@@ -255,12 +258,13 @@ class Miner:
             c["last_ts"] = ts
         if cls == "sidecar":
             self.sidecars[str(rec.get("type"))] = (line, rec)  # last occurrence wins
-            if rec.get("type") == USAGE_TYPE and isinstance(rec.get("usage"), dict):
-                u = rec["usage"]  # another harness's per-request tokens (adapters.py)
-                c["input_tokens"] += _int(u.get("input_tokens"))
-                c["cache_creation_tokens"] += _int(u.get("cache_creation_input_tokens"))
-                c["cache_read_tokens"] += _int(u.get("cache_read_input_tokens"))
-                c["output_tokens"] += _int(u.get("output_tokens"))
+            if rec.get("type") in (USAGE_TYPE, MODEL_TYPE, META_TYPE):  # adapters.py
+                if isinstance(rec.get("harness"), str):
+                    c["harness"] = rec["harness"]
+                if rec.get("type") == MODEL_TYPE and isinstance(rec.get("model"), str):
+                    c["harness_model"] = rec["model"]
+                if rec.get("type") == USAGE_TYPE and isinstance(rec.get("usage"), dict):
+                    self._harness_usage(rec["usage"], bool(rec.get("cumulative")))
                 return
             if rec.get("type") == "cost-state":
                 c["cost_state"] = {
@@ -303,6 +307,24 @@ class Miner:
             self._user(line, rec, ts)
         # system records (stop_hook_summary, turn_duration...) carry nothing we mine
 
+    def _harness_usage(self, u: Dict[str, Any], cumulative: bool) -> None:
+        """Another harness's tokens. A cumulative total adds only its growth since the
+        last total seen, so a total logged twice adds nothing the second time."""
+        c = self.st.cost
+        prev = c["usage_totals"]
+        for mine, theirs in (
+            ("input_tokens", "input_tokens"),
+            ("cache_creation_tokens", "cache_creation_input_tokens"),
+            ("cache_read_tokens", "cache_read_input_tokens"),
+            ("output_tokens", "output_tokens"),
+        ):
+            v = _int(u.get(theirs))
+            if cumulative:
+                c[mine] += max(v - _int(prev.get(theirs)), 0)
+                prev[theirs] = max(v, _int(prev.get(theirs)))
+            else:
+                c[mine] += v
+
     def _attachment(self, rec: Dict[str, Any]) -> None:
         self.counts["attachments"] += 1
         att = rec.get("attachment")
@@ -317,6 +339,9 @@ class Miner:
         msg = rdr.message_of(rec)
         mid = msg.get("id") if isinstance(msg.get("id"), str) else None
         model = msg.get("model") if isinstance(msg.get("model"), str) else None
+        model = model or c.get("harness_model")
+        ep = rec.get("entrypoint")
+        c["harness"] = ep if ep in ("codex", "pi") else (c.get("harness") or "claude-code")
         c["assistant_records"] += 1
         if rec.get("isApiErrorMessage"):
             status = str(rec.get("apiErrorStatus") or "unknown")
@@ -563,6 +588,7 @@ class Miner:
             "last_ts": c["last_ts"],
             "versions": list(c["versions"]),
             "entrypoints": list(c["entrypoints"]),
+            "harness": c.get("harness") or "unknown",
             "unreadable_lines": c["unreadable_lines"],
             "awtoll_tokens": awt,
             "engine": "awmine",

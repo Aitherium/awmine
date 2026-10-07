@@ -734,6 +734,8 @@ def build_report(store: Store) -> Dict[str, Any]:
     sessions: List[Dict[str, Any]] = []
     delta_out, delta_cc, awt_out, mine_out, n_awt = 0, 0, 0, 0, 0
     api: Dict[str, int] = {}
+    per_harness: Dict[str, Dict[str, int]] = {}
+    per_contributor: Dict[str, Dict[str, int]] = {}
     for row in store.read_rows("cost"):
         proj = str(row.get("path") or "").split("/", 1)[0]
         slot = per_project.setdefault(
@@ -765,6 +767,19 @@ def build_report(store: Store) -> Dict[str, Any]:
             slot["cost_usd_missing"] = slot.get("cost_usd_missing", 0) + 1
         for k, v in (row.get("api_errors") or {}).items():
             api[k] = api.get(k, 0) + int(v or 0)
+        eps = row.get("entrypoints") or []
+        fallback = "claude-code" if eps else "unknown"
+        harness = row.get("harness") or next((e for e in eps if e in ("codex", "pi")), fallback)
+        for table, key in (
+            (per_harness, harness),
+            (per_contributor, str(row.get("contributor") or "")),
+        ):
+            if not key:
+                continue
+            t = table.setdefault(key, {"sessions": 0, "output_tokens": 0, "tool_calls": 0})
+            t["sessions"] += 1
+            t["output_tokens"] += int(row.get("output_tokens") or 0)
+            t["tool_calls"] += int(row.get("tool_calls") or 0)
         sessions.append(row)
         awt = row.get("awtoll_tokens")
         if awt:
@@ -777,6 +792,8 @@ def build_report(store: Store) -> Dict[str, Any]:
     rep["cost"] = {
         "sessions": len(sessions),
         "per_project": per_project,
+        "per_harness": per_harness,
+        "per_contributor": per_contributor,
         "api_errors": api,
         "top_sessions_by_output": [
             {
@@ -867,6 +884,16 @@ def report_markdown(rep: Dict[str, Any]) -> str:
             f"in {s['input_tokens']:,}, "
             f"cache-read {s['cache_read_tokens']:,}, tools {s['tool_calls']}, ${s['cost_usd']:.2f}"
         )
+    for title, key in (("Per harness", "per_harness"), ("Per contributor", "per_contributor")):
+        table = rep["cost"].get(key) or {}
+        if not table:
+            continue
+        lines += ["", f"## {title}", ""]
+        for name, t in sorted(table.items()):
+            lines.append(
+                f"- {name}: {t['sessions']} sessions, out {t['output_tokens']:,}, "
+                f"tools {t['tool_calls']}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -1345,6 +1372,15 @@ def build_parser() -> argparse.ArgumentParser:
     # share is the one command that writes OUTSIDE $AWMINE_OUT, so it is the one
     # command that is off unless asked. --share opts in for this run; AWMINE_SHARE=1
     # opts in for an unattended wake. With neither, it writes nothing and says so.
+    mg = sub.add_parser(
+        "merge", help="pool several people's awmine output dirs into one team dir"
+    )
+    mg.add_argument("sources", nargs="+", help="awmine output dirs, as DIR or LABEL=DIR")
+    mg.add_argument("--out", required=True, help="the team output dir (rebuilt every run)")
+    mg.add_argument(
+        "--deny", action="append", default=[], help="extra denylist terms, ','-separated"
+    )
+
     sh = sub.add_parser(
         "share",
         help="OPT-IN: render qualifying procedures as awskills candidates (off by default)",
@@ -1422,6 +1458,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_report(Path(args.out) if args.out else default_out_dir(), args.json)
         if args.cmd == "export":
             return cmd_export(args)
+        if args.cmd == "merge":
+            from .merge import run_merge
+
+            team = Path(args.out)
+            res = run_merge(team, args.sources, load_denylist(team, tuple(args.deny)))
+            _out(json.dumps(res, indent=1))
+            return EXIT_OK
         if args.cmd == "share":
             from .share import run_share
 

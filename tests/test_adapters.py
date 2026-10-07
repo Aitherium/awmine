@@ -131,3 +131,159 @@ def test_pi_session_mines_failure_correction_and_cost(tmp_path: Path) -> None:
     assert (cost["input_tokens"], cost["cache_read_tokens"], cost["cache_creation_tokens"],
             cost["output_tokens"]) == (400, 1600, 200, 60)
     assert cost["models"] == {"m-x": 2}
+
+
+def test_pi_v1_session_without_ids_is_recognised() -> None:
+    """Pi v1 files (no version/id/parentId) are still on disk; measured on Pi's own fixtures."""
+    head = {"type": "session", "id": "x", "timestamp": T.format(0), "cwd": "/r"}
+    assert adapters.harness_of(head) == "pi"
+    rec = adapters.normalize({"type": "message", "timestamp": T.format(1), "message": {
+        "role": "assistant", "stopReason": "toolUse", "content": [
+            {"type": "toolCall", "id": "t", "name": "bash", "arguments": {"command": "ls"}}]}})
+    assert rec["message"]["content"][0]["name"] == "Bash"
+
+
+def test_merge_pools_contributors_and_recomputes_procedures(tmp_path: Path) -> None:
+    from awmine.merge import run_merge
+    from awmine.redact import Denylist
+
+    outs = {}
+    for who, build in (("alice", _codex), ("bob", _pi)):
+        out = tmp_path / who
+        out.mkdir()
+        build(tmp_path / f"{who}-src")
+        assert run_mine(out, [tmp_path / f"{who}-src"], quiet=True)[0] == 0
+        outs[who] = out
+    team = tmp_path / "team"
+    specs = [f"{k}={v}" for k, v in outs.items()]
+    res = run_merge(team, specs, Denylist())
+    assert res["rows"]["outcomes"] == 3
+    assert {r["contributor"] for r in rows(team / "outcomes.jsonl")} == {"alice", "bob"}
+    # a rebuild, not an append: the same inputs give the same rows
+    run_merge(team, specs, Denylist())
+    assert len(rows(team / "outcomes.jsonl")) == 3
+    # the team denylist is applied on the way in
+    run_merge(team, specs, Denylist(["pytest"]))
+    assert all("pytest" not in json.dumps(r) for r in rows(team / "outcomes.jsonl"))
+
+
+def test_merge_refuses_a_dir_that_is_not_awmine_output(tmp_path: Path) -> None:
+    import pytest
+    from awmine.merge import run_merge
+    from awmine.redact import Denylist
+    from awmine.store import CouldNotJudgeError
+
+    (tmp_path / "junk").mkdir()
+    with pytest.raises(CouldNotJudgeError):
+        run_merge(tmp_path / "team", [str(tmp_path / "junk")], Denylist())
+
+
+def test_merge_label_parsing_and_duplicate_dirs(tmp_path: Path) -> None:
+    import pytest
+    from awmine.merge import parse_sources
+    from awmine.store import CouldNotJudgeError
+
+    d = tmp_path / "x"
+    assert parse_sources([f"a={d}"]) == [("a", d)]
+    with pytest.raises(CouldNotJudgeError):
+        parse_sources([f"a={d}", f"b={d}"])
+
+
+def test_merge_redacts_steps_and_manifest_and_is_all_or_nothing(tmp_path: Path) -> None:
+    import pytest
+    from awmine.merge import run_merge
+    from awmine.redact import Denylist
+    from awmine.store import RowInvalidError
+
+    src = tmp_path / "alice"
+    src.mkdir()
+    _codex(tmp_path / "AcmeClient")
+    assert run_mine(src, [tmp_path / "AcmeClient"], quiet=True)[0] == 0
+    team = tmp_path / "team"
+    run_merge(team, [f"alice={src}"], Denylist(["AcmeClient", "pytest"]))
+    for p in team.rglob("*"):
+        if p.is_file():
+            body = p.read_text(encoding="utf-8", errors="replace")
+            assert "AcmeClient" not in body and "pytest" not in body, p
+    before = (team / "outcomes.jsonl").read_bytes()
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "manifest.json").write_text('{"mined": {}}', encoding="utf-8")
+    (bad / "outcomes.jsonl").write_text('{"no": "ts"}\n', encoding="utf-8")
+    with pytest.raises(RowInvalidError):
+        run_merge(team, [f"alice={src}", f"bad={bad}"], Denylist())
+    assert (team / "outcomes.jsonl").read_bytes() == before
+
+
+def _tc(i: int, inp: int, cached: int, out: int) -> Dict[str, Any]:
+    total = {"input_tokens": inp, "cached_input_tokens": cached, "output_tokens": out}
+    return {"timestamp": T.format(i), "type": "event_msg", "payload": {
+        "type": "token_count", "info": {"total_token_usage": total, "last_token_usage": total}}}
+
+
+def test_codex_token_totals_logged_twice_count_once(tmp_path: Path) -> None:
+    """Codex writes most token_count events twice; measured on a real rollout."""
+    root = tmp_path / "codex"
+    _write(root / "rollout-x.jsonl", [
+        {"timestamp": T.format(0), "type": "session_meta", "payload": {"id": "x"}},
+        _tc(1, 100, 60, 10), _tc(2, 100, 60, 10), _tc(3, 250, 160, 30), _tc(4, 250, 160, 30),
+    ])
+    out = tmp_path / "out"
+    out.mkdir()
+    assert run_mine(out, [root], quiet=True)[0] == 0
+    cost = rows(out / "cost.jsonl")[0]
+    assert (cost["input_tokens"], cost["cache_read_tokens"], cost["output_tokens"]) == (
+        90, 160, 30)
+    assert cost["harness"] == "codex"
+
+
+def test_codex_rejection_is_a_denial_and_model_is_captured(tmp_path: Path) -> None:
+    root = tmp_path / "codex"
+    call = {"type": "function_call", "name": "shell_command", "call_id": "c1",
+            "arguments": json.dumps({"command": "docker ps"})}
+    _write(root / "rollout-y.jsonl", [
+        {"timestamp": T.format(0), "type": "turn_context", "payload": {"model": "gpt-x"}},
+        {"timestamp": T.format(1), "type": "response_item", "payload": call},
+        {"timestamp": T.format(2), "type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "c1",
+            "output": "exec command rejected by user"}},
+        {"timestamp": T.format(3), "type": "event_msg", "payload": {
+            "type": "task_complete", "turn_id": "t1",
+            "error": {"message": "x", "codex_error_info": "unauthorized"}}},
+    ])
+    out = tmp_path / "out"
+    out.mkdir()
+    assert run_mine(out, [root], quiet=True)[0] == 0
+    (o,) = rows(out / "outcomes.jsonl")
+    assert (o["verdict"], o["denial_kind"], o["source"]["model"]) == ("error", "user", "gpt-x")
+    cost = rows(out / "cost.jsonl")[0]
+    assert cost["models"] == {"gpt-x": 2}
+    assert cost["api_errors"].get("unauthorized") == 1
+
+
+def test_pi_slash_command_is_not_a_prompt() -> None:
+    rec = adapters.normalize({"type": "message", "timestamp": T.format(1),
+                              "message": {"role": "user", "content": "/model"}})
+    assert rec["type"] == adapters.META_TYPE
+    rec = adapters.normalize({"type": "message", "timestamp": T.format(1),
+                              "message": {"role": "user", "content": "/ is the root dir?"}})
+    assert rec["type"] == adapters.META_TYPE
+
+
+def test_merge_counts_a_copied_dir_once_and_clears_stale_exports(tmp_path: Path) -> None:
+    import shutil
+
+    from awmine.merge import run_merge
+    from awmine.redact import Denylist
+
+    src = tmp_path / "alice"
+    src.mkdir()
+    _codex(tmp_path / "s")
+    assert run_mine(src, [tmp_path / "s"], quiet=True)[0] == 0
+    shutil.copytree(src, tmp_path / "alice-copy")
+    team = tmp_path / "team"
+    (team / "exports").mkdir(parents=True)
+    (team / "exports" / "stale.jsonl").write_text("{}\n", encoding="utf-8")
+    res = run_merge(team, [f"a={src}", f"b={tmp_path / 'alice-copy'}"], Denylist())
+    assert res["rows"]["outcomes"] == 2 and res["duplicates"] > 0
+    assert not (team / "exports" / "stale.jsonl").exists()

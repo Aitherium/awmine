@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 #: whichever harness ran it.
 SHELL_TOOL = "Bash"
 USAGE_TYPE = "awmine-usage"
+MODEL_TYPE = "awmine-model"
 META_TYPE = "harness-meta"
 
 CODEX_TYPES = {"session_meta", "turn_context", "response_item", "event_msg", "world_state"}
@@ -49,7 +50,16 @@ PI_ENTRY_TYPES = {
     "session_info",
 }
 PI_SHELL_TOOLS = {"bash", "shell"}
+PI_ROLES = {"user", "assistant", "toolResult", "system", "custom", "bashExecution"}
 
+#: Codex failure texts that carry no exit code. A rejection is a DENIAL, not a crash.
+_CODEX_DENIED = re.compile(r"^\s*exec command rejected by user", re.I)
+_CODEX_FAILED = re.compile(
+    r"^\s*(apply_patch verification failed|failed to parse function arguments|execution error)",
+    re.I,
+)
+#: A Pi TUI command (/model, /mode, /) typed at the prompt is not a message to the agent.
+_PI_COMMAND = re.compile(r"^/\S*(\s|$)")
 _EXIT_CODE = re.compile(r"(?:Exit code|exited with code|exit_code)\D{0,3}(-?\d+)", re.I)
 #: Codex IDE prompts wrap the typed request in editor context; keep the request.
 _CODEX_REQUEST = re.compile(r"##\s*My request for Codex:\s*", re.I)
@@ -62,9 +72,14 @@ def harness_of(rec: Dict[str, Any]) -> str:
     t = rec.get("type")
     if t in CODEX_TYPES and "payload" in rec:
         return "codex"
-    if t == "session" and "version" in rec and "cwd" in rec:
+    # Pi v1 sessions (still on disk, migrated only when Pi reopens them) carry
+    # no version, id or parentId: recognise them by the message envelope.
+    if t == "session" and "cwd" in rec and "parentUuid" not in rec:
         return "pi"
     if t in PI_ENTRY_TYPES and "parentId" in rec:
+        return "pi"
+    msg = rec.get("message")
+    if t == "message" and isinstance(msg, dict) and msg.get("role") in PI_ROLES:
         return "pi"
     return "unknown"
 
@@ -119,15 +134,20 @@ def _assistant(
     return out
 
 
-def _tool_result(ts: Any, harness: str, call_id: str, text: str, is_error: bool) -> Dict[str, Any]:
+def _tool_result(
+    ts: Any, harness: str, call_id: str, text: str, is_error: bool, denial: Optional[str] = None
+) -> Dict[str, Any]:
     block = {"type": "tool_result", "tool_use_id": call_id, "content": text, "is_error": is_error}
-    return {
+    out: Dict[str, Any] = {
         "type": "user",
         "parentUuid": None,
         "timestamp": ts,
         "entrypoint": harness,
         "message": {"role": "user", "content": [block]},
     }
+    if denial:
+        out["toolDenialKind"] = denial
+    return out
 
 
 def _prompt(ts: Any, harness: str, prompt_id: str, text: str) -> Dict[str, Any]:
@@ -141,11 +161,24 @@ def _prompt(ts: Any, harness: str, prompt_id: str, text: str) -> Dict[str, Any]:
     }
 
 
-def _usage(ts: Any, harness: str, inp: int, cache_read: int, cache_write: int, out: int) -> Dict:
+def _usage(
+    ts: Any,
+    harness: str,
+    inp: int,
+    cache_read: int,
+    cache_write: int,
+    out: int,
+    *,
+    cumulative: bool = False,
+) -> Dict:
+    """Token usage. ``cumulative`` = running session totals, not one request: the
+    miner adds only the growth since the last total it saw, so a total logged twice
+    (Codex writes most token_count events twice) is counted once."""
     return {
         "type": USAGE_TYPE,
         "harness": harness,
         "timestamp": ts,
+        "cumulative": cumulative,
         "usage": {
             "input_tokens": inp,
             "cache_read_input_tokens": cache_read,
@@ -191,7 +224,10 @@ def _texts(content: Any) -> str:
 
 def _codex(rec: Dict[str, Any]) -> Dict[str, Any]:
     ts = rec.get("timestamp")
-    p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+    model = _codex_model(rec)
+    if model:  # the miner applies it to the assistant records that follow
+        return {"type": MODEL_TYPE, "harness": "codex", "timestamp": ts, "model": model}
+    p =rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
     pt = p.get("type")
     if rec.get("type") == "response_item":
         if pt in ("function_call", "custom_tool_call", "local_shell_call"):
@@ -214,18 +250,49 @@ def _codex(rec: Dict[str, Any]) -> Dict[str, Any]:
             return _codex_prompt(ts, _texts(item.get("content")), str(item.get("id") or ""))
         if pt == "token_count":
             info = p.get("info") if isinstance(p.get("info"), dict) else {}
-            last = info.get("last_token_usage")
-            if isinstance(last, dict):
-                cached = _n(last.get("cached_input_tokens"))
+            # the running total when present (repeats then add nothing); a file
+            # with only per-request usage is summed as it stands
+            total = info.get("total_token_usage")
+            usage = total if isinstance(total, dict) else info.get("last_token_usage")
+            if isinstance(usage, dict):
+                cached = _n(usage.get("cached_input_tokens"))
                 return _usage(
                     ts,
                     "codex",
-                    max(_n(last.get("input_tokens")) - cached, 0),
+                    max(_n(usage.get("input_tokens")) - cached, 0),
                     cached,
                     0,
-                    _n(last.get("output_tokens")),
+                    _n(usage.get("output_tokens")),
+                    cumulative=isinstance(total, dict),
                 )
+        if pt == "task_complete" and isinstance(p.get("error"), dict):
+            return _codex_error(ts, p["error"], str(p.get("turn_id") or ""))
+        if pt in ("error", "stream_error"):
+            return _codex_error(ts, p, "")
     return _meta(rec, "codex")
+
+
+def _codex_error(ts: Any, err: Dict[str, Any], turn: str) -> Dict[str, Any]:
+    rec = _assistant(ts, "codex", f"codex-error-{turn or ts}", [], error=True)
+    kind = err.get("codex_error_info")
+    rec["apiErrorStatus"] = str(kind) if isinstance(kind, (str, int)) else "error"
+    return rec
+
+
+def _codex_model(rec: Dict[str, Any]) -> Optional[str]:
+    """The model a turn_context / world_state line names, if any."""
+    p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+    model: Any = None
+    if rec.get("type") == "turn_context":
+        model = p.get("model")
+        mode = p.get("collaboration_mode")
+        if not model and isinstance(mode, dict) and isinstance(mode.get("settings"), dict):
+            model = mode["settings"].get("model")
+    elif rec.get("type") == "world_state":
+        state = p.get("state") if isinstance(p.get("state"), dict) else {}
+        mode = state.get("collaboration_mode")
+        model = mode.get("model") if isinstance(mode, dict) else None
+    return model if isinstance(model, str) and model else None
 
 
 def _codex_prompt(ts: Any, text: str, pid: str = "") -> Dict[str, Any]:
@@ -263,7 +330,7 @@ def _codex_output(ts: Any, p: Dict[str, Any]) -> Dict[str, Any]:
         try:
             out = json.loads(out)
         except ValueError:
-            pass
+            out = p.get("output")  # plain text that happens to start with a brace
     if isinstance(out, dict):
         meta = out.get("metadata") if isinstance(out.get("metadata"), dict) else {}
         if isinstance(meta.get("exit_code"), int):
@@ -275,8 +342,14 @@ def _codex_output(ts: Any, p: Dict[str, Any]) -> Dict[str, Any]:
         m = _EXIT_CODE.search(text[:400])
         if m:
             exit_code = int(m.group(1))
-    failed = p.get("success") is False or (exit_code is not None and exit_code != 0)
-    return _tool_result(ts, "codex", str(p.get("call_id") or ""), text, failed)
+    denial = "user" if _CODEX_DENIED.match(text) else None
+    failed = (
+        p.get("success") is False
+        or (exit_code is not None and exit_code != 0)
+        or bool(denial)
+        or bool(_CODEX_FAILED.match(text))
+    )
+    return _tool_result(ts, "codex", str(p.get("call_id") or ""), text, failed, denial)
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +371,10 @@ def _pi(rec: Dict[str, Any]) -> Dict[str, Any]:
     role = msg.get("role")
     eid = str(rec.get("id") or f"pi-{ts}")
     if role == "user":
-        return _prompt(ts, "pi", eid, _texts(msg.get("content")))
+        text = _texts(msg.get("content"))
+        if _PI_COMMAND.match(text.strip()):
+            return _meta(rec, "pi")
+        return _prompt(ts, "pi", eid, text)
     if role == "toolResult":
         return _tool_result(
             ts,
