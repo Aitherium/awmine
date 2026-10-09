@@ -23,7 +23,15 @@ import sys
 #: package cannot read the registry, and a doctor that guessed at the family
 #: would go stale in silence. Regenerate to update.
 SELF = 'awmine'
-FAMILY = ['awask', 'awavatar', 'awbac', 'awbrain', 'awbrowse', 'awcams', 'awclassify', 'awdecide', 'awdeck', 'awdelphi', 'awdit', 'awembed', 'awevolve', 'awfind', 'awflow', 'awfocus', 'awgit', 'awgraph', 'awgym', 'awiam', 'awkno', 'awm', 'awmail', 'awnboard', 'awnest', 'awnet', 'awnode', 'awpool', 'awpredict', 'awprism', 'awprove', 'awreason', 'awrecover', 'awrecurse', 'awrelay', 'awrena', 'awrepl', 'awreport', 'awresearch', 'awrise', 'awrouter', 'awrtifact', 'awrun', 'awscope', 'awscreen', 'awseal', 'awsettings', 'awshare', 'awsprite', 'awstorage', 'awsuite', 'awswarm', 'awtax', 'awtoll', 'awtunnel', 'awvision', 'awvoice', 'awwall', 'gawbbonet']
+FAMILY = [
+    'awask', 'awavatar', 'awbac', 'awbrain', 'awbrowse', 'awcams', 'awclassify', 'awdecide',
+    'awdeck', 'awdelphi', 'awdit', 'awembed', 'awevolve', 'awfind', 'awflow', 'awfocus', 'awgit',
+    'awgraph', 'awgym', 'awiam', 'awkno', 'awm', 'awmail', 'awnboard', 'awnest', 'awnet', 'awplay',
+    'awpool', 'awpredict', 'awprism', 'awprove', 'awreason', 'awrecover', 'awrecurse', 'awrelay',
+    'awrena', 'awrepl', 'awreport', 'awresearch', 'awrise', 'awrouter', 'awrtifact', 'awrun',
+    'awscope', 'awscreen', 'awseal', 'awsettings', 'awshare', 'awsprite', 'awstorage', 'awsuite',
+    'awswarm', 'awtax', 'awtoll', 'awtunnel', 'awvision', 'awvoice', 'awwall', 'gawbbonet',
+]
 PAIRS_WITH = ['awdecide', 'awm', 'awrise', 'awtoll']
 
 #: This brick's OWN config, read out of its source at generation time.
@@ -33,7 +41,11 @@ PAIRS_WITH = ['awdecide', 'awm', 'awrise', 'awtoll']
 #: platform-wide vars it also touches would be noise, and a doctor that floods
 #: gets ignored.
 ENV_REQUIRED = []
-ENV_OPTIONAL = ['AWMINE_CODEX_BACKLOG', 'AWMINE_DENY', 'AWMINE_FLUSH_ROWS', 'AWMINE_OUT', 'AWMINE_PUBLISH_GATE', 'AWMINE_ROOTS', 'AWMINE_SELFTEST_BREAK', 'AWMINE_SHARE', 'AWMINE_SHARE_REPO', 'AWMINE_SUSPECTS_FATAL']
+ENV_OPTIONAL = [
+    'AWMINE_CODEX_BACKLOG', 'AWMINE_DENY', 'AWMINE_FLUSH_ROWS', 'AWMINE_OUT', 'AWMINE_PUBLISH_GATE',
+    'AWMINE_ROOTS', 'AWMINE_SELFTEST_BREAK', 'AWMINE_SHARE', 'AWMINE_SHARE_REPO',
+    'AWMINE_SUSPECTS_FATAL',
+]
 
 
 def _installed(mod: str) -> "str | None":
