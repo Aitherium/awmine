@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "1",
+  "name": "awmine",
+  "description": "Mine what your agents did -- outcomes, lessons and procedures out of the transcripts they left behind.",
+  "url": "https://aitherium.github.io/awmine/",
+  "repository": "https://github.com/Aitherium/awmine",
+  "kind": "tool",
+  "status": "no-pages",
+  "adopt": "Point it at one transcript directory and read back what those sessions learned, with the line each lesson came from.",
+  "pairs_with": [
+    "awtoll",
+    "awm",
+    "awdata",
+    "awdecide",
+    "awskills",
+    "awrise"
+  ],
+  "includes": [],
+  "metrics": {
+    "files": {
+      "value": 48,
+      "as_of": "2026-11-08T07:11:35-08:00"
+    },
+    "tests": {
+      "value": 21,
+      "as_of": "2026-11-08T07:11:35-08:00"
+    }
+  }
+}
