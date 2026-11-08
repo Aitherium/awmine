@@ -26,6 +26,8 @@ Point it at one transcript directory and read back what those sessions learned, 
 ## Where it lives
 
 - Repo: https://github.com/Aitherium/awmine
+- Docs: https://aitherium.github.io/awmine/
+- Manifest (keys + the one-line adoption story): https://aitherium.github.io/awmine/aither-manifest.json
 
 This repository is mirrored from the AitherOS monorepo by `.github/workflows/sync-awmine.yml`; hand edits made here are overwritten on the next sync — change the source instead.
 
