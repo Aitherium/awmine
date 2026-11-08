@@ -10,6 +10,10 @@ Every agent session leaves a transcript, and almost every transcript is thrown a
 pip install git+https://github.com/Aitherium/awmine.git
 ```
 
+## In Claude Code
+
+- skill: `/awmine`
+
 ## Use it in 30 seconds
 
 Point it at one transcript directory and read back what those sessions learned, with the line each lesson came from.
