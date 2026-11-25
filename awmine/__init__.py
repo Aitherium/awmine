@@ -4,6 +4,6 @@ Aither World Mine: what your own sessions already taught you, extracted as
 rows other tools can learn from, with every string redacted before it lands.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = ["__version__"]

@@ -199,3 +199,45 @@ def test_the_name_gate_does_not_quote_the_value():
     hits = suspect_hits("GH_TOKEN=supersecretvalue123")
     assert hits == ["GH_TOKEN"]
     assert all("supersecret" not in h for h in hits)
+
+
+def test_a_scheme_word_before_a_variable_reference_is_not_a_secret() -> None:
+    """Measured 2026-11-25: four already-redacted tool errors read
+    `Authorization: Bearer $TOK` and made `awmine run` exit 1 for 165 wakes."""
+    text = '-H "Authorization: Bearer $TOK" "http://127.0.0.1:8182/health"'
+    out, hits = rd.redact_text(text)
+    assert hits.get("kv", 0) == 0, (hits, out)
+    assert out == text
+
+
+def test_a_real_value_after_a_scheme_word_is_still_redacted() -> None:
+    out, hits = rd.redact_text("Authorization: Bearer abcdefghijk")
+    assert hits.get("kv", 0) == 1, (hits, out)
+    assert "[REDACTED:kv]" in out and "abcdefghijk" not in out
+
+
+def test_plain_and_braced_references_are_pointers_not_values() -> None:
+    for value in ("$TOK", "${TOK}", "'$TOK'", '"$TOK"'):
+        out, hits = rd.redact_text(f"token={value}")
+        assert hits.get("kv", 0) == 0, (value, hits, out)
+    out, hits = rd.redact_text("--password $SECRET")
+    assert hits.get("kv", 0) == 0, (hits, out)
+
+
+def test_a_value_that_only_starts_with_a_reference_is_still_redacted() -> None:
+    out, hits = rd.redact_text("token=$TOK-and-more")
+    assert hits.get("kv", 0) == 1, (hits, out)
+
+
+def test_a_placeholder_is_never_mistaken_for_a_secret_on_a_rescan() -> None:
+    """The placeholder's own colon feeds `-u user:pass`: `-u [REDACTED:hex]` re-matched."""
+    text = "3575  0.0 /usr/bin/conmon --api-version 1 -c [REDACTED:hex] -u [REDACTED:hex]"
+    out, hits = rd.redact_text(text)
+    assert hits == {}, (hits, out)
+    assert out == text
+
+
+def test_curl_userinfo_with_a_real_password_is_still_redacted() -> None:
+    out, hits = rd.redact_text("curl -u admin:hunter2xyz http://x")
+    assert hits.get("kv", 0) == 1, (hits, out)
+    assert "hunter2xyz" not in out

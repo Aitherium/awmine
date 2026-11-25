@@ -94,6 +94,15 @@ _KV_WORD = (
 # exactly where such a blob turns up. 64 is longer than any real env name.
 _KV_PREFIX = r"[A-Za-z0-9_.\-]{0,64}"
 
+#: ``Authorization: Bearer <credential>``. The plain assignment pattern stops at the
+#: scheme word ("Bearer"), so the CREDENTIAL after it was never redacted and could not
+#: be classified as a `$VAR` reference either (measured 2026-11-25: four tool errors
+#: carried `Authorization: Bearer $TOK`; the write pass emitted `[REDACTED:kv] $TOK`).
+#: This pattern takes the whole header, scheme and value together.
+_KV_AUTH_HEADER = re.compile(
+    r"(?i)(?<![\w\-])(?:authorization|proxy-authorization)[ \t]*[:=][ \t]*"
+    r"(?:bearer|basic|token|digest)[ \t]+\S+"
+)
 #: ``NAME=value`` / ``NAME: value``.
 _KV_ASSIGN = re.compile(rf"(?i){_KV_PREFIX}{_KV_WORD}[ \t]*[=:][ \t]*\S+")
 #: ``--password <value>`` -- the space-separated flag form needs no ``=``/``:``
@@ -123,6 +132,7 @@ SECRET_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("secret", re.compile(r"\bAIza[a-zA-Z0-9_-]{35}")),
     ("secret", re.compile(r"\bhf_[a-zA-Z0-9]{30,}")),
     ("secret", re.compile(r"\bAKIA[A-Z0-9]{16}\b")),
+    ("kv", _KV_AUTH_HEADER),
     ("kv", _KV_ASSIGN),
     ("kv", _KV_FLAG),
     ("kv", _KV_CURL_U),
@@ -133,6 +143,75 @@ SECRET_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ),
     ("hex", re.compile(r"\b[A-Fa-f0-9]{32,}\b")),
 ]
+
+#: ``Authorization: Bearer $TOK`` -- a SCHEME word followed by a reference.
+_SCHEME_WORDS = ("bearer", "basic", "token", "digest")
+#: A shell variable reference names where a value lives; it carries none of it.
+_VAR_REF = re.compile(r"\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
+#: The redactor's own placeholder. Its ``:`` feeds the ``-u user:pass`` pattern and the
+#: ``NAME: value`` form, so a re-scan of already-redacted text keeps finding "secrets"
+#: that are just the placeholder (measured 2026-11-25: `-u [REDACTED:hex]` in stored
+#: `ps` output). Any kv match that CONTAINS a placeholder is already redacted.
+_PLACEHOLDER_MARK = "[REDACTED:"
+
+
+def _kv_value_is_reference(matched: str) -> bool:
+    """Is the value half of a ``NAME=value`` match only a ``$VAR`` reference?
+
+    Measured 2026-11-25: four rows inside ``manifest.json`` -- tool errors that had
+    ALREADY been redacted when written -- contained ``Authorization: Bearer $TOK``.
+    The kv pattern matched the scheme word as the "value", the placeholder never
+    landed where the scan looked, and ``awmine run`` exited 1 on every wake for 165
+    consecutive runs over text that carries no secret: the exact crying-wolf failure
+    the suspect scan's own comments warn about. A reference is a pointer; the value,
+    if it ever existed, is redacted where it is written.
+    """
+    sep = max(matched.rfind("="), matched.rfind(":"))
+    if sep >= 0:
+        value = matched[sep + 1:]
+    else:  # --password <value>: space-separated flag form
+        parts = matched.split(None, 1)
+        if len(parts) < 2:
+            return False
+        value = parts[1]
+    value = value.strip().strip("\"'")
+    parts = value.split(None, 1)
+    if len(parts) == 2 and parts[0].lower().strip("\"'") in _SCHEME_WORDS:
+        value = parts[1].strip().strip("\"'")
+    return bool(_VAR_REF.fullmatch(value))
+
+
+def _redact_kv(text: str, hits: Dict[str, int]) -> str:
+    """Replace every kv match EXCEPT a bare ``$VAR`` reference, as one group pass.
+
+    References are masked out of the text FIRST: the family's patterns overlap
+    (``Authorization: Bearer $TOK`` matches both the auth-header pattern and the
+    plain assignment pattern, the second only as far as ``Bearer``), so skipping a
+    match in one pattern is not enough -- the next pattern rescans the same span and
+    redacts half of it. That is exactly how the four measured rows became
+    ``[REDACTED:kv] $TOK``.
+    """
+    pats = [p for kind, p in SECRET_PATTERNS if kind == "kv"]
+    saved: List[Tuple[str, str]] = []
+
+    def _mask(m: "re.Match[str]") -> str:
+        matched = m.group(0)
+        if _kv_value_is_reference(matched) or _PLACEHOLDER_MARK in matched:
+            token = f"<<KVREF {len(saved)}>>"
+            saved.append((token, matched))
+            return token
+        return matched
+
+    for pat in pats:
+        text = pat.sub(_mask, text)
+    placeholder = _placeholder("kv")
+    for pat in pats:
+        text, n = pat.subn(placeholder, text)
+        if n:
+            hits["kv"] = hits.get("kv", 0) + n
+    for token, original in saved:
+        text = text.replace(token, original)
+    return text
 
 HOME_PATTERNS: List["re.Pattern[str]"] = [
     re.compile(r"(?i)[A-Z]:[\\/]Users[\\/][^\\/\s\"'<>|]+[\\/]"),
@@ -227,9 +306,14 @@ def redact_text(
     broken = _break() == "redact"
     if mode == "full" and not broken:
         for kind, pat in SECRET_PATTERNS:
+            if kind == "kv":
+                continue
             text, n = pat.subn(_placeholder(kind), text)
             if n:
                 hits[kind] = hits.get(kind, 0) + n
+        # kv LAST: the named families above are narrower and keep their own kind
+        # (`X-API-Key: ...` must stay a "header" hit). Whatever they leave is kv's.
+        text = _redact_kv(text, hits)
     text, n = home_substitute(text)
     if n:
         hits["home"] = hits.get("home", 0) + n
