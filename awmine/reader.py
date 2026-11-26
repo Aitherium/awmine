@@ -34,6 +34,8 @@ DEFAULT_ROOT = Path.home() / ".claude" / "projects"
 HARNESS_ROOTS = (
     Path.home() / ".codex" / "sessions",
     Path.home() / ".pi" / "agent" / "sessions",
+    Path.home() / ".gemini" / "antigravity" / "brain",
+    Path.home() / ".aither" / "harness-sessions",
 )
 
 try:  # the import ladder: awtoll first, a copy of the same idiom otherwise
@@ -316,6 +318,10 @@ class Found:
 
     @property
     def session_id(self) -> str:
+        # Antigravity writes <conv_id>/.system_generated/logs/transcript.jsonl and
+        # awsh writes <session_id>/events.jsonl — use the session directory name, not "transcript"/"events".
+        if self.path.name in ("transcript.jsonl", "transcript_full.jsonl", "events.jsonl"):
+            return top_session_of(self.path, "subagent")
         return self.path.stem
 
     @property
@@ -339,11 +345,11 @@ def classify_path(path: Path) -> str:
 
 def top_session_of(path: Path, kind: str) -> str:
     """The top-level session: a session's own stem, a subagent's parent session dir."""
-    if kind == "session":
+    if kind == "session" and path.name not in ("transcript.jsonl", "transcript_full.jsonl", "events.jsonl"):
         return path.stem
     for parent in path.parents:
         name = parent.name
-        if not name or name.lower() in ("subagents", "workflows") or name.startswith("wf_"):
+        if not name or name.lower() in ("subagents", "workflows", "logs", ".system_generated") or name.startswith("wf_"):
             continue
         return name
     return path.stem
@@ -361,6 +367,15 @@ def discover(roots: Iterable[Path]) -> List[Found]:
         else:
             continue
         for p in paths:
+            # Antigravity writes compact transcript.jsonl alongside transcript_full.jsonl,
+            # split logs/chunks/*/*.jsonl slices, and swarm/board.jsonl; mine only the
+            # canonical logs/transcript.jsonl (falling back to logs/transcript_full.jsonl
+            # only if the compact transcript is absent).
+            if ".system_generated" in p.parts:
+                if p.parent.name != "logs" or p.name not in ("transcript.jsonl", "transcript_full.jsonl"):
+                    continue
+                if p.name == "transcript_full.jsonl" and (p.parent / "transcript.jsonl").is_file():
+                    continue
             try:
                 st = p.stat()
             except OSError:

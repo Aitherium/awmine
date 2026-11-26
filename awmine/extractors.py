@@ -22,7 +22,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import reader as rdr
-from .adapters import META_TYPE, MODEL_TYPE, USAGE_TYPE
+from .adapters import FIFO_TOOL_ID, KNOWN_HARNESSES, META_TYPE, MODEL_TYPE, USAGE_TYPE
 from .redact import Denylist, redact_text
 
 QUOTE_CAP = 320
@@ -341,7 +341,7 @@ class Miner:
         model = msg.get("model") if isinstance(msg.get("model"), str) else None
         model = model or c.get("harness_model")
         ep = rec.get("entrypoint")
-        c["harness"] = ep if ep in ("codex", "pi") else (c.get("harness") or "claude-code")
+        c["harness"] = ep if ep in KNOWN_HARNESSES else (c.get("harness") or "claude-code")
         c["assistant_records"] += 1
         if rec.get("isApiErrorMessage"):
             status = str(rec.get("apiErrorStatus") or "unknown")
@@ -459,6 +459,8 @@ class Miner:
     def _result(self, line: int, rec: Dict[str, Any], block: Dict[str, Any], ts: str) -> None:
         c = self.st.cost
         tid = block.get("tool_use_id")
+        if tid == FIFO_TOOL_ID and self.st.pending:
+            tid = next(iter(self.st.pending))
         call = self.st.pending.pop(tid, None) if isinstance(tid, str) else None
         if call is None:
             self.counts["orphan_results"] += 1

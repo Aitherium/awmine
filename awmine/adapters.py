@@ -19,10 +19,16 @@ Formats:
 * **Pi** (``~/.pi/agent/sessions/--<cwd>--/<ts>_<id>.jsonl``): a ``session``
   header, then entries with ``id``/``parentId``; ``message`` entries hold a
   user, assistant (``toolCall`` blocks) or ``toolResult`` message.
+* **Antigravity** (``~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl``):
+  entries with ``step_index``, ``source``, ``type`` (``USER_INPUT``, ``PLANNER_RESPONSE``,
+  ``GENERIC``, ``SYSTEM_MESSAGE``, ``ERROR_MESSAGE``, ``CHECKPOINT``).
+* **awsh** (``~/.aither/harness-sessions/<id>/events.jsonl``):
+  entries with ``kind``, ``seq``, ``session_id``, ``ts`` (epoch float).
 """
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import re
 from typing import Any, Dict, List, Optional
@@ -33,9 +39,37 @@ SHELL_TOOL = "Bash"
 USAGE_TYPE = "awmine-usage"
 MODEL_TYPE = "awmine-model"
 META_TYPE = "harness-meta"
+#: Sentinel tool_use_id for harnesses (Antigravity) whose tool results follow in FIFO order.
+FIFO_TOOL_ID = "__fifo__"
+#: Non-Claude harnesses recognised in per-harness reporting.
+KNOWN_HARNESSES = ("codex", "pi", "antigravity", "awsh")
 
 CODEX_TYPES = {"session_meta", "turn_context", "response_item", "event_msg", "world_state"}
 CODEX_SHELL_TOOLS = {"shell", "shell_command", "exec_command", "local_shell", "container.exec"}
+ANTIGRAVITY_TYPES = {
+    "USER_INPUT",
+    "PLANNER_RESPONSE",
+    "GENERIC",
+    "SYSTEM_MESSAGE",
+    "ERROR_MESSAGE",
+    "CHECKPOINT",
+}
+ANTIGRAVITY_SHELL_TOOLS = {"run_command", "bash", "shell"}
+AWSH_KINDS = {
+    "session.starting",
+    "session.ready",
+    "session.exited",
+    "turn.started",
+    "turn.completed",
+    "text.delta",
+    "tool.use",
+    "tool.call",
+    "tool.result",
+    "error",
+}
+_AGY_USER_REQ = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.S)
+_AGY_HOOK_DENIED = re.compile(r"tool call denied by pre-tool hook", re.I)
+_AGY_EXEC_ERR = re.compile(r"Encountered error in tool execution", re.I)
 PI_ENTRY_TYPES = {
     "message",
     "model_change",
@@ -66,10 +100,14 @@ _CODEX_REQUEST = re.compile(r"##\s*My request for Codex:\s*", re.I)
 
 
 def harness_of(rec: Dict[str, Any]) -> str:
-    """claude | codex | pi | unknown, from one record's shape alone."""
+    """claude | codex | pi | antigravity | awsh | unknown, from one record's shape alone."""
     if "parentUuid" in rec:
         return "claude"
     t = rec.get("type")
+    if "step_index" in rec and "source" in rec and t in ANTIGRAVITY_TYPES:
+        return "antigravity"
+    if rec.get("kind") in AWSH_KINDS and "session_id" in rec and "seq" in rec:
+        return "awsh"
     if t in CODEX_TYPES and "payload" in rec:
         return "codex"
     # Pi v1 sessions (still on disk, migrated only when Pi reopens them) carry
@@ -91,6 +129,10 @@ def normalize(rec: Dict[str, Any]) -> Dict[str, Any]:
         return _codex(rec)
     if h == "pi":
         return _pi(rec)
+    if h == "antigravity":
+        return _antigravity(rec)
+    if h == "awsh":
+        return _awsh(rec)
     return rec
 
 
@@ -427,3 +469,164 @@ def _pi_usage(ts: Any, u: Dict[str, Any]) -> Dict[str, Any]:
         ts, "pi", _n(u.get("input")), _n(u.get("cacheRead")), _n(u.get("cacheWrite")),
         _n(u.get("output")),
     )
+
+
+# ---------------------------------------------------------------------------
+# Antigravity (~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl)
+# ---------------------------------------------------------------------------
+
+
+def _agy_unquote(val: Any) -> Any:
+    """Antigravity compact transcripts JSON-stringify scalar tool arg values."""
+    if isinstance(val, str) and len(val) >= 2 and (
+        (val[0] == '"' and val[-1] == '"')
+        or (val[0] == "{" and val[-1] == "}")
+        or (val[0] == "[" and val[-1] == "]")
+    ):
+        try:
+            return json.loads(val)
+        except ValueError:
+            return val
+    return val
+
+
+def _antigravity(rec: Dict[str, Any]) -> Dict[str, Any]:
+    ts = rec.get("created_at") or rec.get("timestamp")
+    t = rec.get("type")
+    idx = rec.get("step_index")
+    if t == "CHECKPOINT":
+        return {"type": "system", "subtype": "compact_boundary", "parentUuid": None, "timestamp": ts}
+    if t == "SYSTEM_MESSAGE":
+        return _meta({"timestamp": ts}, "antigravity")
+    if t == "ERROR_MESSAGE":
+        out = _assistant(ts, "antigravity", f"agy-err-{idx}", [], error=True)
+        err = rec.get("error") or rec.get("content") or "error"
+        out["apiErrorStatus"] = "safety" if "safety" in str(err).lower() else "error"
+        return out
+    if t == "USER_INPUT":
+        if rec.get("source") != "USER_EXPLICIT":
+            return _meta({"timestamp": ts}, "antigravity")
+        raw = str(rec.get("content") or "")
+        m = _AGY_USER_REQ.search(raw)
+        text = m.group(1).strip() if m else raw.strip()
+        if not text or _PI_COMMAND.match(text):
+            return _meta({"timestamp": ts}, "antigravity")
+        return _prompt(ts, "antigravity", f"agy-prompt-{idx}", text)
+    if t == "PLANNER_RESPONSE":
+        blocks: List[Dict[str, Any]] = []
+        text = rec.get("content")
+        if isinstance(text, str) and text.strip():
+            blocks.append({"type": "text", "text": text})
+        calls = rec.get("tool_calls") if isinstance(rec.get("tool_calls"), list) else []
+        for i, tc in enumerate(calls):
+            if not isinstance(tc, dict):
+                continue
+            name = str(tc.get("name") or "unknown")
+            raw_args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+            args = {k: _agy_unquote(v) for k, v in raw_args.items()}
+            if name in ANTIGRAVITY_SHELL_TOOLS:
+                cmd = args.get("CommandLine", args.get("command", args.get("cmd")))
+                name, args = SHELL_TOOL, _shell_input(cmd)
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": f"agy-call-{idx}-{i}",
+                    "name": name,
+                    "input": args,
+                }
+            )
+        usage = {
+            "input_tokens": _n(rec.get("input_tokens")),
+            "cache_read_input_tokens": _n(rec.get("cache_read_tokens")),
+            "cache_creation_input_tokens": 0,
+            "output_tokens": _n(rec.get("output_tokens")),
+        }
+        model = rec.get("model") if isinstance(rec.get("model"), str) else None
+        return _assistant(
+            ts,
+            "antigravity",
+            f"agy-msg-{idx}",
+            blocks,
+            model=model,
+            usage=usage,
+            end_turn=(not calls and bool(blocks)),
+        )
+    if t == "GENERIC":
+        text = str(rec.get("content") or "")
+        err_field = rec.get("error")
+        m = _EXIT_CODE.search(text[:600])
+        exit_code = int(m.group(1)) if m else None
+        denial = "hook" if _AGY_HOOK_DENIED.search(text[:600]) or _AGY_HOOK_DENIED.search(str(err_field or "")) else None
+        is_err = (
+            bool(err_field)
+            or (exit_code is not None and exit_code != 0)
+            or bool(denial)
+            or bool(_AGY_EXEC_ERR.search(text[:400]))
+        )
+        return _tool_result(
+            ts,
+            "antigravity",
+            FIFO_TOOL_ID,
+            str(err_field) if err_field and not text else text,
+            is_err,
+            denial,
+        )
+    return _meta({"timestamp": ts}, "antigravity")
+
+
+# ---------------------------------------------------------------------------
+# awsh (~/.aither/harness-sessions/<id>/events.jsonl)
+# ---------------------------------------------------------------------------
+
+
+def _epoch_iso(ts: Any) -> str:
+    if isinstance(ts, str):
+        return ts
+    if isinstance(ts, (int, float)) and ts > 0:
+        try:
+            return _dt.datetime.fromtimestamp(float(ts), tz=_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        except (OSError, OverflowError, ValueError):
+            return ""
+    return ""
+
+
+def _awsh(rec: Dict[str, Any]) -> Dict[str, Any]:
+    ts = _epoch_iso(rec.get("ts"))
+    kind = rec.get("kind")
+    seq = rec.get("seq")
+    data = rec.get("data") if isinstance(rec.get("data"), dict) else {}
+    if kind == "session.starting":
+        mb = data.get("model_binding")
+        model = mb.get("model") if isinstance(mb, dict) else (mb if isinstance(mb, str) else None)
+        if isinstance(model, str) and model:
+            return {"type": MODEL_TYPE, "harness": "awsh", "timestamp": ts, "model": model}
+        return _meta({"timestamp": ts}, "awsh")
+    if kind == "turn.started":
+        text = str(rec.get("text") or "").strip()
+        if not text:
+            return _meta({"timestamp": ts}, "awsh")
+        return _prompt(ts, "awsh", f"awsh-turn-{seq}", text)
+    if kind in ("tool.use", "tool.call"):
+        name = str(rec.get("tool") or data.get("name") or "unknown")
+        inp = data.get("input") if isinstance(data.get("input"), dict) else (
+            data.get("args") if isinstance(data.get("args"), dict) else {}
+        )
+        if name.lower() in ANTIGRAVITY_SHELL_TOOLS or name.lower() in CODEX_SHELL_TOOLS:
+            name, inp = SHELL_TOOL, _shell_input(inp.get("command", inp.get("CommandLine", rec.get("text"))))
+        tid = str(rec.get("tool_use_id") or f"awsh-call-{seq}")
+        return _assistant(ts, "awsh", f"awsh-call-{seq}", [{"type": "tool_use", "id": tid, "name": name, "input": inp}])
+    if kind == "tool.result":
+        tid = str(rec.get("tool_use_id") or FIFO_TOOL_ID)
+        text = str(rec.get("text") or data.get("output") or "")
+        is_err = bool(data.get("is_error")) or (isinstance(data.get("exit_code"), int) and data["exit_code"] != 0)
+        return _tool_result(ts, "awsh", tid, text, is_err)
+    if kind == "turn.completed":
+        is_err = bool(data.get("is_error")) or (isinstance(data.get("exit_code"), int) and data["exit_code"] != 0)
+        text = str(rec.get("text") or "").strip()
+        blocks = [{"type": "text", "text": text}] if text else []
+        if is_err or blocks:
+            return _assistant(ts, "awsh", f"awsh-end-{seq}", blocks, end_turn=bool(blocks), error=is_err)
+        return _meta({"timestamp": ts}, "awsh")
+    if kind == "error":
+        return _assistant(ts, "awsh", f"awsh-err-{seq}", [], error=True)
+    return _meta({"timestamp": ts}, "awsh")

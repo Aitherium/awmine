@@ -769,7 +769,9 @@ def build_report(store: Store) -> Dict[str, Any]:
             api[k] = api.get(k, 0) + int(v or 0)
         eps = row.get("entrypoints") or []
         fallback = "claude-code" if eps else "unknown"
-        harness = row.get("harness") or next((e for e in eps if e in ("codex", "pi")), fallback)
+        harness = row.get("harness") or next(
+            (e for e in eps if e in ("codex", "pi", "antigravity", "awsh")), fallback
+        )
         for table, key in (
             (per_harness, harness),
             (per_contributor, str(row.get("contributor") or "")),

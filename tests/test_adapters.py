@@ -287,3 +287,100 @@ def test_merge_counts_a_copied_dir_once_and_clears_stale_exports(tmp_path: Path)
     res = run_merge(team, [f"a={src}", f"b={tmp_path / 'alice-copy'}"], Denylist())
     assert res["rows"]["outcomes"] == 2 and res["duplicates"] > 0
     assert not (team / "exports" / "stale.jsonl").exists()
+
+
+def _antigravity(root: Path, conv_id: str = "conv-agy-0001") -> Path:
+    logdir = root / conv_id / ".system_generated" / "logs"
+    recs = [
+        {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+         "created_at": T.format(0),
+         "content": "<USER_REQUEST>\nrun pytest on the package\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nnow\n</ADDITIONAL_METADATA>"},
+        {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+         "created_at": T.format(1), "model": "gemini-4-neon-high",
+         "input_tokens": 500, "cache_read_tokens": 200, "output_tokens": 40,
+         "tool_calls": [{"name": "run_command", "args": {"CommandLine": "\"pytest -x\""}}]},
+        {"step_index": 2, "source": "MODEL", "type": "GENERIC", "status": "DONE",
+         "created_at": T.format(2), "content": "Command exited with code 1.\nFAILED"},
+        {"step_index": 3, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+         "created_at": T.format(3), "model": "gemini-4-neon-high",
+         "input_tokens": 600, "cache_read_tokens": 300, "output_tokens": 50,
+         "tool_calls": [{"name": "run_command", "args": {"CommandLine": "\"pytest -x\""}}]},
+        {"step_index": 4, "source": "MODEL", "type": "GENERIC", "status": "DONE",
+         "created_at": T.format(4), "content": "Command exited with code 0.\n1 passed"},
+        {"step_index": 5, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+         "created_at": T.format(5), "model": "gemini-4-neon-high",
+         "input_tokens": 700, "cache_read_tokens": 350, "output_tokens": 20,
+         "content": "All tests pass and the app is updated."},
+        {"step_index": 6, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE",
+         "created_at": T.format(6), "content": "<SYSTEM_MESSAGE>Reminder</SYSTEM_MESSAGE>"},
+        {"step_index": 7, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+         "created_at": T.format(7),
+         "content": "<USER_REQUEST>\nNo, that is wrong. It did not update.\n</USER_REQUEST>"},
+    ]
+    # Also plant duplicate transcript_full.jsonl, split chunks/, and swarm/board.jsonl
+    # to confirm discover() mines only canonical logs/transcript.jsonl.
+    _write(logdir / "transcript_full.jsonl", recs)
+    _write(logdir / "chunks" / "transcript" / "00000001.jsonl", recs)
+    _write(logdir / "chunks" / "transcript_full" / "00000001.jsonl", recs)
+    _write(root / conv_id / ".system_generated" / "swarm" / "board.jsonl", [{"seq": 1, "text": "hi"}])
+    return _write(logdir / "transcript.jsonl", recs)
+
+
+def _awsh(root: Path, sid: str = "awsh0001") -> Path:
+    return _write(
+        root / sid / "events.jsonl",
+        [
+            {"kind": "session.starting", "seq": 1, "session_id": sid, "ts": 1795671782.0,
+             "text": "Google Antigravity", "data": {"harness": "antigravity", "model_binding": "deepseek-v4"}},
+            {"kind": "session.ready", "seq": 2, "session_id": sid, "ts": 1795671783.0, "text": "idle", "data": {}},
+            {"kind": "turn.started", "seq": 3, "session_id": sid, "ts": 1795671784.0,
+             "text": "check fleet health", "data": {}},
+            {"kind": "tool.use", "seq": 4, "session_id": sid, "ts": 1795671785.0,
+             "tool": "bash", "tool_use_id": "t1", "data": {"input": {"command": "pytest -q"}}},
+            {"kind": "tool.result", "seq": 5, "session_id": sid, "ts": 1795671786.0,
+             "tool": "bash", "tool_use_id": "t1", "text": "ok", "data": {"is_error": False, "exit_code": 0}},
+            {"kind": "turn.completed", "seq": 6, "session_id": sid, "ts": 1795671787.0,
+             "text": "Fleet is green.", "data": {"is_error": False, "exit_code": 0}},
+            {"kind": "turn.started", "seq": 7, "session_id": sid, "ts": 1795671788.0,
+             "text": "No, that is still broken.", "data": {}},
+        ],
+    )
+
+
+def test_antigravity_session_mines_fifo_tools_retry_correction_and_skips_full_dup(tmp_path: Path) -> None:
+    root = tmp_path / "brain"
+    _antigravity(root)
+    out = tmp_path / "out"
+    out.mkdir()
+    code, summary = run_mine(out, [root], quiet=True)
+    assert code == 0
+    assert summary["files_seen"] == 1  # transcript_full.jsonl skipped beside transcript.jsonl
+    outcomes = rows(out / "outcomes.jsonl")
+    assert [(r["state"]["args_shape"], r["verdict"]) for r in outcomes] == [
+        ("$ pytest", "error"),
+        ("$ pytest", "ok"),
+    ]
+    kinds = sorted(r["kind"] for r in rows(out / "lessons.jsonl"))
+    assert kinds == ["correction", "retry_worked"]
+    cost = rows(out / "cost.jsonl")[0]
+    assert cost["harness"] == "antigravity"
+    assert cost["session_id"] == "conv-agy-0001"
+    assert cost["models"] == {"gemini-4-neon-high": 3}
+    assert cost["output_tokens"] == 110
+
+
+def test_awsh_session_mines_tools_correction_and_harness(tmp_path: Path) -> None:
+    root = tmp_path / "harness-sessions"
+    _awsh(root)
+    out = tmp_path / "out"
+    out.mkdir()
+    code, _ = run_mine(out, [root], quiet=True)
+    assert code == 0
+    outcomes = rows(out / "outcomes.jsonl")
+    assert [(r["state"]["args_shape"], r["verdict"]) for r in outcomes] == [("$ pytest", "ok")]
+    assert [r["kind"] for r in rows(out / "lessons.jsonl")] == ["correction"]
+    cost = rows(out / "cost.jsonl")[0]
+    assert cost["harness"] == "awsh"
+    assert cost["session_id"] == "awsh0001"
+    assert cost["models"] == {"deepseek-v4": 2}
+
